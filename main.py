@@ -17,7 +17,7 @@ app.add_middleware(
 )
 
 # Direct target page for Goethe A1 Exam
-TARGET_URL = "https://www.goethe.de/ins/pk/en/spr/prf/gza1.html"
+TARGET_URL = "https://www.goethe.de/ins/pk/en/spr/prf/gzsd1.cfm"
 
 # In-memory status cache
 system_state = {
