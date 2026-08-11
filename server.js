@@ -1,4 +1,6 @@
 // file: server.js
+import { Boom } from '@hapi/boom';
+
 import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) {
     globalThis.crypto = webcrypto;
