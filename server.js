@@ -2,6 +2,8 @@ import express from 'express';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
+console.log("🔄 Starting Baileys Node.js Service..."); // Forced startup log
+
 const app = express();
 app.use(express.json());
 
@@ -22,9 +24,11 @@ async function connectToWhatsApp() {
 
     if (!sock.authState.creds.registered) {
         if (!PHONE_NUMBER) {
-            console.error("🔴 ERROR: PHONE_NUMBER environment variable is not set!");
+            console.error("🔴 ERROR: PHONE_NUMBER environment variable is NOT set in Render!");
             return;
         }
+        
+        console.log(`Sending pairing request for ${PHONE_NUMBER}...`);
         
         setTimeout(async () => {
             try {
@@ -38,7 +42,7 @@ async function connectToWhatsApp() {
             } catch (err) {
                 console.error("🔴 Failed to request pairing code:", err);
             }
-        }, 3000); 
+        }, 4000); 
     }
 
     sock.ev.on('connection.update', (update) => {
