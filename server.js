@@ -1,11 +1,10 @@
-const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const pino = require('pino');
+import express from 'express';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import pino from 'pino';
 
 const app = express();
 app.use(express.json());
 
-// Hardcoded to 3000 so it doesn't conflict with Python on Render
 const PORT = 3000;
 const PHONE_NUMBER = process.env.PHONE_NUMBER; 
 
