@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "express": "^4.18.2",
-  "@whiskeysockets/baileys": "7.0.0-rc14"
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "pino": "^8.19.0"
   }
 }
