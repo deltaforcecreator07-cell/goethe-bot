@@ -7,4 +7,4 @@ node server.js &
 sleep 3
 
 # Start Python Watchtower on the public Render port
-uvicorn bot:app --host 0.0.0.0 --port $PORT
+uvicorn main:app --host 0.0.0.0 --port $PORT
