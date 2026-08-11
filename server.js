@@ -1,6 +1,3 @@
-// file: server.js
-import { Boom } from '@hapi/boom';
-
 import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) {
     globalThis.crypto = webcrypto;
@@ -9,6 +6,7 @@ if (!globalThis.crypto) {
 import express from 'express';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { Boom } from '@hapi/boom';                     // <-- add this
 
 console.log("🔄 Starting Baileys Node.js Service...");
 
