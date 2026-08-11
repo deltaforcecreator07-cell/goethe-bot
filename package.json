@@ -14,4 +14,5 @@
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "@hapi/boom": "^10.0.1",
     "pino": "^8.19.0"
+  }
 }
