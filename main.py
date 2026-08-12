@@ -170,7 +170,7 @@ async def startup_event():
     start_node_gateway()
     asyncio.create_task(watchtower_loop())
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "Watchtower is running"}
 
