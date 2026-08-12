@@ -19,7 +19,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 WA_API_URL = "http://localhost:3000/send"
-WA_GROUP_ID = ""  
+WA_GROUP_ID = "120363428099842528@g.us"
 
 INACTIVE_LOG_INTERVAL = timedelta(minutes=30)    
 ACTIVE_ALERT_INTERVAL = timedelta(minutes=5)     
