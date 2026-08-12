@@ -19,18 +19,17 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 WA_API_URL = "http://localhost:3000/send"
-WA_GROUP_ID = ""  # Populate after retrieving Group ID from logs
+WA_GROUP_ID = ""  
 
-# Notification intervals
-INACTIVE_LOG_INTERVAL = timedelta(minutes=30)    # status log every 30 min when idle
-ACTIVE_ALERT_INTERVAL = timedelta(minutes=5)     # alert every 5 min when seats open
+INACTIVE_LOG_INTERVAL = timedelta(minutes=30)    
+ACTIVE_ALERT_INTERVAL = timedelta(minutes=5)     
 
 last_inactive_log_time = datetime.min
 last_active_alert_time = datetime.min
 total_scan_count = 0
 
 # ==============================================================================
-# NODE GATEWAY (subprocess + watchdog that restarts it if it dies)
+# NODE GATEWAY SUBPROCESS
 # ==============================================================================
 node_process = None
 stop_requested = False
@@ -41,7 +40,6 @@ def stream_node_logs(pipe, prefix):
             print(f"[{prefix}] {line.strip()}", flush=True)
 
 def monitor_node_gateway():
-    """Watchdog: if the Node gateway exits (crash, OOM, ...), restart it."""
     global node_process
     while not stop_requested:
         proc = node_process
@@ -49,11 +47,7 @@ def monitor_node_gateway():
             return
         rc = proc.wait()
         print(f"🔴 Node gateway exited (code {rc}). Restarting in 15s...", flush=True)
-        if stop_requested:
-            return
         time.sleep(15)
-        if stop_requested:
-            return
         start_node_gateway()
 
 def start_node_gateway():
@@ -91,37 +85,26 @@ def broadcast_alert(message):
             print(f"WhatsApp Error: {e}", flush=True)
 
 # ==============================================================================
-# WATCHTOWER SCANNER – REAL LOGIC (inspect the Goethe page)
+# WATCHTOWER CORE
 # ==============================================================================
 async def check_goethe_status():
-    """
-    Returns True if exam seats are available (registration form present),
-    False otherwise.
-    """
     url = "https://www.goethe.de/ins/pk/en/m/spr/prf/gzsd1.cfm"
     try:
-        # Use a proper User-Agent to avoid being blocked
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 1. Check for the date selector (indicates active exams)
         date_selector = soup.find('select', {'name': 'examDate'})
         if date_selector and date_selector.find_all('option'):
             return True
 
-        # 2. Check for the "no examinations" message
         no_exam_msg = soup.find(text=lambda t: t and "no examinations" in t.lower())
         if no_exam_msg:
             return False
 
-        # 3. Fallback: look for a registration form (adjust ID if needed)
         if soup.find('form', {'id': 'registrationForm'}):
             return True
 
-        # If unsure, assume inactive to avoid false alarms
         return False
     except Exception as e:
         print(f"Scraper error: {e}")
@@ -139,32 +122,20 @@ async def watchtower_loop():
 
             if is_active:
                 if now - last_active_alert_time >= ACTIVE_ALERT_INTERVAL:
-                    msg = "🚨 URGENT: GOETHE SEATS ARE ACTIVE!\nSlot changes detected. Initiate Sniper Bot!"
-                    broadcast_alert(msg)
+                    broadcast_alert("🚨 URGENT: GOETHE SEATS ARE ACTIVE!\nSlot changes detected. Initiate Sniper Bot!")
                     last_active_alert_time = now
             else:
                 if now - last_inactive_log_time >= INACTIVE_LOG_INTERVAL:
-                    msg = (
-                        f"ℹ️ WATCHTOWER STATUS LOG\n\n"
-                        f"Status: Background Scanning Active\n"
-                        f"Total Scans Performed: {total_scan_count}\n"
-                        f"Result: No active bookings found yet."
-                    )
-                    broadcast_alert(msg)
+                    broadcast_alert(f"ℹ️ WATCHTOWER STATUS LOG\nStatus: Scanning Active\nScans: {total_scan_count}\nResult: Closed.")
                     last_inactive_log_time = now
                     total_scan_count = 0
 
-            # Scan every 1–3 minutes (randomised to avoid pattern detection)
-            sleep_seconds = random.randint(60, 180)
-            await asyncio.sleep(sleep_seconds)
+            await asyncio.sleep(random.randint(60, 180))
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
             await asyncio.sleep(60)
 
-# ==============================================================================
-# APP LIFECYCLE
-# ==============================================================================
 @app.on_event("startup")
 async def startup_event():
     start_node_gateway()
