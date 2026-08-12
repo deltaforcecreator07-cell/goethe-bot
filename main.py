@@ -4,6 +4,7 @@ import requests
 import asyncio
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
@@ -29,14 +30,34 @@ last_active_alert_time = datetime.min
 total_scan_count = 0
 
 # ==============================================================================
-# SUBPROCESS LOG STREAMER
+# NODE GATEWAY (subprocess + watchdog that restarts it if it dies)
 # ==============================================================================
+node_process = None
+stop_requested = False
+
 def stream_node_logs(pipe, prefix):
     for line in iter(pipe.readline, ''):
         if line:
             print(f"[{prefix}] {line.strip()}", flush=True)
 
+def monitor_node_gateway():
+    """Watchdog: if the Node gateway exits (crash, OOM, ...), restart it."""
+    global node_process
+    while not stop_requested:
+        proc = node_process
+        if proc is None:
+            return
+        rc = proc.wait()
+        print(f"🔴 Node gateway exited (code {rc}). Restarting in 15s...", flush=True)
+        if stop_requested:
+            return
+        time.sleep(15)
+        if stop_requested:
+            return
+        start_node_gateway()
+
 def start_node_gateway():
+    global node_process
     try:
         print("🔄 Starting Node.js gateway...", flush=True)
         node_process = subprocess.Popen(
@@ -48,6 +69,7 @@ def start_node_gateway():
         )
         threading.Thread(target=stream_node_logs, args=(node_process.stdout, "NODE"), daemon=True).start()
         threading.Thread(target=stream_node_logs, args=(node_process.stderr, "NODE-ERR"), daemon=True).start()
+        threading.Thread(target=monitor_node_gateway, daemon=True).start()
     except Exception as e:
         print(f"🔴 Failed to start Node process: {e}", flush=True)
 
@@ -147,6 +169,10 @@ async def watchtower_loop():
 async def startup_event():
     start_node_gateway()
     asyncio.create_task(watchtower_loop())
+
+@app.get("/")
+def root():
+    return {"status": "Watchtower is running"}
 
 @app.get("/api/status")
 def read_status():
