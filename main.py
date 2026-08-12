@@ -1,135 +1,157 @@
 import os
-import time
 import random
 import requests
 import asyncio
 import subprocess
 import threading
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
 from fastapi import FastAPI
 import uvicorn
 
 app = FastAPI()
 
-# ================= CONFIG =================
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
-GOETHE_URL         = os.environ.get("GOETHE_URL", "https://example.com/a1-exam")  # <-- REAL URL
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-INACTIVE_LOG_INTERVAL = timedelta(hours=1)
-ACTIVE_ALERT_INTERVAL = timedelta(minutes=5)
+WA_API_URL = "http://localhost:3000/send"
+WA_GROUP_ID = ""  # Populate after retrieving Group ID from logs
 
-last_inactive_log   = datetime.min
-last_active_alert   = datetime.min
-total_scans         = 0
+# Notification intervals
+INACTIVE_LOG_INTERVAL = timedelta(minutes=30)    # status log every 30 min when idle
+ACTIVE_ALERT_INTERVAL = timedelta(minutes=5)     # alert every 5 min when seats open
 
-wa_group_id = os.environ.get("WA_GROUP_ID", "")
+last_inactive_log_time = datetime.min
+last_active_alert_time = datetime.min
+total_scan_count = 0
 
-# ================= NODE PROCESS =================
-def stream_pipe(pipe, prefix):
+# ==============================================================================
+# SUBPROCESS LOG STREAMER
+# ==============================================================================
+def stream_node_logs(pipe, prefix):
     for line in iter(pipe.readline, ''):
         if line:
             print(f"[{prefix}] {line.strip()}", flush=True)
 
-def start_node():
+def start_node_gateway():
     try:
         print("🔄 Starting Node.js gateway...", flush=True)
-        p = subprocess.Popen(
+        node_process = subprocess.Popen(
             ["node", "server.js"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True, bufsize=1
+            text=True,
+            bufsize=1
         )
-        threading.Thread(target=stream_pipe, args=(p.stdout, "NODE"), daemon=True).start()
-        threading.Thread(target=stream_pipe, args=(p.stderr, "NODE-ERR"), daemon=True).start()
+        threading.Thread(target=stream_node_logs, args=(node_process.stdout, "NODE"), daemon=True).start()
+        threading.Thread(target=stream_node_logs, args=(node_process.stderr, "NODE-ERR"), daemon=True).start()
     except Exception as e:
-        print(f"❌ Node start error: {e}", flush=True)
+        print(f"🔴 Failed to start Node process: {e}", flush=True)
 
-# ================= NOTIFICATIONS =================
-def send_telegram(text):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
-            timeout=10
-        )
-    except Exception as e:
-        print(f"Telegram error: {e}", flush=True)
+# ==============================================================================
+# NOTIFICATION BROADCASTER
+# ==============================================================================
+def broadcast_alert(message):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=10)
+        except Exception as e:
+            print(f"Telegram Error: {e}", flush=True)
 
-def send_whatsapp(text):
-    global wa_group_id
-    if not wa_group_id:
-        return
-    try:
-        requests.post("http://localhost:3000/send",
-            json={"to": wa_group_id, "body": text}, timeout=10)
-    except Exception as e:
-        print(f"WhatsApp error: {e}", flush=True)
+    if WA_GROUP_ID:
+        try:
+            requests.post(WA_API_URL, json={"to": WA_GROUP_ID, "body": message}, timeout=10)
+        except Exception as e:
+            print(f"WhatsApp Error: {e}", flush=True)
 
-def broadcast(text):
-    send_telegram(text)
-    send_whatsapp(text)
-
-# ================= GOETHE CHECKER =================
-def is_booking_open():
+# ==============================================================================
+# WATCHTOWER SCANNER – REAL LOGIC (inspect the Goethe page)
+# ==============================================================================
+async def check_goethe_status():
     """
-    Replace with actual logic to scrape the Goethe A1 booking page.
-    Return True if bookings are available.
+    Returns True if exam seats are available (registration form present),
+    False otherwise.
     """
+    url = "https://www.goethe.de/ins/pk/en/m/spr/prf/gzsd1.cfm"
     try:
-        resp = requests.get(GOETHE_URL, timeout=15)
-        if resp.status_code != 200:
-            return False
-        # Example: look for text indicating open slots
-        if "booking open" in resp.text.lower():
+        # Use a proper User-Agent to avoid being blocked
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # 1. Check for the date selector (indicates active exams)
+        date_selector = soup.find('select', {'name': 'examDate'})
+        if date_selector and date_selector.find_all('option'):
             return True
+
+        # 2. Check for the "no examinations" message
+        no_exam_msg = soup.find(text=lambda t: t and "no examinations" in t.lower())
+        if no_exam_msg:
+            return False
+
+        # 3. Fallback: look for a registration form (adjust ID if needed)
+        if soup.find('form', {'id': 'registrationForm'}):
+            return True
+
+        # If unsure, assume inactive to avoid false alarms
         return False
     except Exception as e:
-        print(f"Error checking Goethe: {e}", flush=True)
+        print(f"Scraper error: {e}")
         return False
 
-# ================= WATCHTOWER LOOP =================
-async def watchtower():
-    global last_inactive_log, last_active_alert, total_scans, wa_group_id
-    print("🚀 Watchtower started", flush=True)
+async def watchtower_loop():
+    global last_inactive_log_time, last_active_alert_time, total_scan_count
 
+    print("🚀 Watchtower Scanner Started...", flush=True)
     while True:
         try:
             now = datetime.utcnow()
-            total_scans += 1
-            active = is_booking_open()
+            is_active = await check_goethe_status()
+            total_scan_count += 1
 
-            if active:
-                if now - last_active_alert >= ACTIVE_ALERT_INTERVAL:
-                    msg = "🚨 GOETHE SEATS ACTIVE!\nBookings open – secure your spot now!"
-                    broadcast(msg)
-                    last_active_alert = now
+            if is_active:
+                if now - last_active_alert_time >= ACTIVE_ALERT_INTERVAL:
+                    msg = "🚨 URGENT: GOETHE SEATS ARE ACTIVE!\nSlot changes detected. Initiate Sniper Bot!"
+                    broadcast_alert(msg)
+                    last_active_alert_time = now
             else:
-                if now - last_inactive_log >= INACTIVE_LOG_INTERVAL:
+                if now - last_inactive_log_time >= INACTIVE_LOG_INTERVAL:
                     msg = (
-                        "ℹ️ WATCHTOWER STATUS\n"
-                        f"Bookings: CLOSED\n"
-                        f"Total scans: {total_scans}\n"
-                        f"Checking every 4-7 min"
+                        f"ℹ️ WATCHTOWER STATUS LOG\n\n"
+                        f"Status: Background Scanning Active\n"
+                        f"Total Scans Performed: {total_scan_count}\n"
+                        f"Result: No active bookings found yet."
                     )
-                    broadcast(msg)
-                    last_inactive_log = now
-                    total_scans = 0
+                    broadcast_alert(msg)
+                    last_inactive_log_time = now
+                    total_scan_count = 0
 
-            await asyncio.sleep(random.randint(240, 420))
+            # Scan every 1–3 minutes (randomised to avoid pattern detection)
+            sleep_seconds = random.randint(60, 180)
+            await asyncio.sleep(sleep_seconds)
 
         except Exception as e:
-            print(f"Loop error: {e}", flush=True)
+            print(f"Loop Error: {e}", flush=True)
             await asyncio.sleep(60)
 
+# ==============================================================================
+# APP LIFECYCLE
+# ==============================================================================
 @app.on_event("startup")
-async def startup():
-    start_node()
-    asyncio.create_task(watchtower())
+async def startup_event():
+    start_node_gateway()
+    asyncio.create_task(watchtower_loop())
 
 @app.get("/api/status")
-def status():
-    return {"status": "running", "wa_group_id": wa_group_id}
+def read_status():
+    return {"status": "Watchtower is running"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
