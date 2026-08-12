@@ -1,52 +1,60 @@
+// server.js — Goethe Watchtower WhatsApp Gateway
+// Connection logic aligned with QuickCart AI for Render compatibility.
+
 import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) {
     globalThis.crypto = webcrypto;
 }
 
 import express from 'express';
-import makeWASocket, { 
-    useMultiFileAuthState, 
-    DisconnectReason, 
-    fetchLatestBaileysVersion 
+import makeWASocket, {
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { Boom } from '@hapi/boom';
 
-console.log("🔄 Starting Baileys Node.js Service...");
+console.log('🔄 Starting Baileys Node.js Service...');
 
 const app = express();
 app.use(express.json());
 
 const PORT = 3000;
-const PHONE_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, ''); // trim & clean
+const PHONE_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
 
 let sock;
+let isTerminated = false; // prevents reconnection after fatal errors
 
 async function connectToWhatsApp() {
-    // Fetch the correct version dynamically (avoid mismatch)
+    if (isTerminated) return;
+
     const { version } = await fetchLatestBaileysVersion();
     console.log(`Using WhatsApp Web version: ${version.join('.')}`);
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'info' }), // show info for now (to see errors)
-        browser: ["Goethe Watchtower", "Chrome", "20.0.04"],
-        version
+        logger: pino({ level: 'silent' }),
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],   // ← Critical for Render
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        defaultQueryTimeoutMs: 60000,
+        connectTimeoutMs: 120000,
+        keepAliveIntervalMs: 30000,
     });
+
+    sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'connecting') {
             console.log('🟡 Socket connecting...');
-            // Only request pairing code if not already registered
-            if (!sock.authState.creds.registered) {
-                if (!PHONE_NUMBER) {
-                    console.error('🔴 PHONE_NUMBER is empty! Set it in Render env.');
-                    return;
-                }
+            if (!sock.authState.creds.registered && PHONE_NUMBER) {
                 try {
                     console.log(`Requesting pairing code for ${PHONE_NUMBER}...`);
                     const code = await sock.requestPairingCode(PHONE_NUMBER);
@@ -63,19 +71,23 @@ async function connectToWhatsApp() {
         } else if (connection === 'open') {
             console.log('✅ WhatsApp connected!');
         } else if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`Connection closed. Status: ${statusCode}`);
-            if (statusCode === DisconnectReason.loggedOut) {
-                console.log('🔴 Logged out. You’ll need to restart the service to pair again.');
-            } else {
-                // Reconnect after a delay for non-fatal disconnects
-                console.log('🔄 Reconnecting in 10 seconds…');
-                setTimeout(() => connectToWhatsApp(), 10_000);
+
+            if (
+                statusCode === DisconnectReason.loggedOut ||
+                statusCode === DisconnectReason.conflict ||
+                statusCode === 440
+            ) {
+                console.log('🔴 Session terminated. You must re‑pair by restarting the service.');
+                isTerminated = true;
+                return;
             }
+
+            console.log('🔄 Reconnecting in 10 seconds…');
+            setTimeout(connectToWhatsApp, 10_000);
         }
     });
-
-    sock.ev.on('creds.update', saveCreds);
 
     // Group ID sniffer
     sock.ev.on('messages.upsert', async (m) => {
@@ -87,7 +99,6 @@ async function connectToWhatsApp() {
     });
 }
 
-// Express endpoint to send messages
 app.post('/send', async (req, res) => {
     const { to, body } = req.body;
     if (!sock) return res.status(500).json({ error: 'Socket not ready.' });
@@ -101,6 +112,5 @@ app.post('/send', async (req, res) => {
     }
 });
 
-// Start everything
 connectToWhatsApp().catch(err => console.error('Startup error:', err));
 app.listen(PORT, () => console.log(`🚀 WA Gateway running on internal port ${PORT}`));
